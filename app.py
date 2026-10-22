@@ -4,7 +4,8 @@
 
 Orquesta; no contiene lógica de análisis. Acciones SEPARADAS y explícitas:
   1. "Actualizar datos desde BAANOOL": adquisición (src/integracion_periodo.actualizar_desde_baanool).
-  2. "Analizar periodo": análisis del periodo EXACTO a partir de su manifiesto, sin tocar BAANOOL.
+  2. "Analizar periodo": análisis del periodo seleccionado con GPX/manifiestos YA descargados (de ese
+     periodo exacto o de una adquisición mayor que lo contenga), sin tocar BAANOOL.
   3. Modo local: analiza las carpetas de entrada/ como siempre (no necesita token ni manifiesto).
 Abrir la página, cambiar fechas o cambiar filtros NO consulta BAANOOL ni vuelve a analizar.
 El token solo se lee de la variable de entorno (aquí únicamente se comprueba que exista); no se guarda.
@@ -20,16 +21,16 @@ import streamlit as st
 
 from src.geocercas import asociar_con_trayectos
 from src.integracion_periodo import (NOTA_ESTADO_ACTUAL, actualizar_desde_baanool, advertencia_periodo,
-                                     analizar_flota_local, analizar_periodo, aplicar_resultado_adquisicion,
-                                     aplicar_resultado_analisis, parsear_periodo, periodo_key,
-                                     puede_generar_mapa, token_configurado)
+                                     analizar_flota_local, aplicar_resultado_adquisicion, parsear_periodo,
+                                     periodo_key, puede_generar_mapa, token_configurado)
 from src.llaves import buscar_excel_en
-from src.manifiesto import ManifiestoInvalido
+from src.seleccion_periodo import (NOTA_SIN_CONSULTA, TIPO_EXACTA, analizar_periodo_local,
+                                   aplicar_resultado_subperiodo, filas_movimiento_diario, texto_periodo)
 from src.parametros import (DISTANCIA_MOVIMIENTO_ALTO_KM, DISTANCIA_MOVIMIENTO_BAJO_KM,
                             DISTANCIA_MOVIMIENTO_MUY_ALTO_KM,
                             PUNTOS_MINIMOS_FUERA, TOLERANCIA_FRONTERA_METROS)
-from src.prioridades import (ALTA, CRITICA, DATOS_ERROR_ADQUISICION, DATOS_SIN_DATOS_PERIODO,
-                             DATOS_SIN_DISPOSITIVO, ESTADOS_DATOS, MOVIMIENTO_ALTO, NIVELES_MOVIMIENTO, NORMAL,
+from src.prioridades import (ALTA, CRITICA, DATOS_COBERTURA_LOCAL_INSUFICIENTE, DATOS_ERROR_ADQUISICION,
+                             DATOS_SIN_DATOS_PERIODO, DATOS_SIN_DISPOSITIVO, DATOS_SIN_POSICIONES_SUBPERIODO, ESTADOS_DATOS, MOVIMIENTO_ALTO, NIVELES_MOVIMIENTO, NORMAL,
                              ORDEN_PRIORIDADES, REVISAR, filtrar_evaluaciones, generar_csv, resumir_flota)
 from src.zonas import cargar_zonas
 
@@ -56,6 +57,14 @@ def fmt_duracion(d: timedelta | None) -> str:
 
 def si_no(valor: bool | None) -> str:
     return "—" if valor is None else ("Sí" if valor else "No")
+
+
+def fuente_corta(e) -> str:
+    """Procedencia resumida de la fila: adquisición exacta o el periodo de la adquisición mayor usada."""
+    f = (st.session_state.get("fuentes_datos") or {}).get(e.resultado.llave_original)
+    if f is None or not f.analizable:
+        return "—"
+    return "exacta" if f.exacta else f"{f.adquisicion_inicio:%d/%m %H:%M}→{f.adquisicion_fin:%d/%m %H:%M}"
 
 
 def etiqueta_prioridad(p: str | None) -> str:
@@ -102,27 +111,31 @@ def accion_actualizar_baanool(inicio: datetime, fin: datetime, entrada: Path, ex
 
 
 def accion_analizar_periodo(inicio: datetime, fin: datetime, excel: Path) -> None:
-    """Analiza el periodo exacto con su manifiesto. NO consulta BAANOOL ni descarga."""
+    """Analiza el periodo seleccionado con los GPX/manifiestos locales. NO consulta BAANOOL ni descarga,
+    ni siquiera cuando faltan datos: eso es decisión del usuario con el otro botón."""
     if not excel.is_file():
         st.error(f"No encuentro el Excel de LLAVEs: {excel}")
         return
     st.session_state.pop("aviso_zonas", None)
-    with st.spinner("Analizando periodo…"):
-        try:
-            resultado = analizar_periodo(inicio, fin, excel, RAIZ, obtener_zonas())
-        except ManifiestoInvalido as exc:
-            st.error(f"El manifiesto de este periodo no se puede leer: {exc}")
-            return
-    if resultado is None:
-        st.warning("No existe un manifiesto de adquisición para exactamente este periodo. Usa «Actualizar datos "
-                   "desde BAANOOL» o el modo local. No se inventó ningún estado.")
+    with st.spinner("Analizando periodo con archivos locales…"):
+        resultado = analizar_periodo_local(inicio, fin, excel, RAIZ, obtener_zonas())
+    if resultado.sin_cobertura:
+        disponibles = resultado.intervalos_disponibles()
+        st.warning(
+            "COBERTURA_LOCAL_INSUFICIENTE: ningún manifiesto local contiene completamente el periodo solicitado "
+            f"({texto_periodo(inicio, fin)}). Intervalos de adquisición disponibles: "
+            + ("; ".join(disponibles) if disponibles else "ninguno")
+            + ". No se descargó nada. Si quieres datos de este periodo, usa «Actualizar datos desde BAANOOL». "
+              "Los resultados mostrados antes no cambiaron.")
+        for aviso in resultado.avisos:
+            st.caption(aviso)
         return
     resumen = resumir_flota(resultado.evaluaciones)
-    aplicar_resultado_analisis(st.session_state, resultado, resumen, generar_csv(resultado.evaluaciones),
-                               datetime.now(), "PERIODO")
+    aplicar_resultado_subperiodo(st.session_state, resultado, resumen, generar_csv(resultado.evaluaciones),
+                                 datetime.now())
     st.session_state["info"]["geofencing"] = "aviso_zonas" not in st.session_state
     if resultado.llaves_fuera_del_catalogo:
-        st.warning(f"El manifiesto incluye {len(resultado.llaves_fuera_del_catalogo)} LLAVE(s) que ya no están "
+        st.warning(f"Los manifiestos incluyen {len(resultado.llaves_fuera_del_catalogo)} LLAVE(s) que ya no están "
                    "en Lista_Vehiculos.xlsx; no se muestran.")
 
 
@@ -144,6 +157,8 @@ def accion_analizar_local(entrada: Path, excel: Path) -> None:
                                 "aviso_excel": aviso_excel, "geofencing": "aviso_zonas" not in st.session_state}
     st.session_state["periodo_analizado"] = {"clave": None, "modo": "LOCAL", "inicio": None, "fin": None}
     st.session_state["manifiesto_usado"] = None
+    st.session_state["origen_datos"] = None
+    st.session_state["fuentes_datos"] = {}
     st.session_state["mapas"] = {}
     st.session_state["mapa_abierto"] = None
 
@@ -236,7 +251,8 @@ if adq:
 st.header("Análisis")
 cols = st.columns([1, 1])
 if cols[0].button("Analizar periodo", type="primary", disabled=not periodo_valido, key="btn_analizar_periodo",
-                  help="Usa solo el manifiesto del periodo y los GPX que este referencia. No consulta BAANOOL."):
+                  help="Usa GPX ya descargados: de ese periodo exacto o de una adquisición mayor que lo contenga "
+                       "(se filtran los puntos en memoria). No consulta BAANOOL ni descarga."):
     accion_analizar_periodo(inicio_sel, fin_sel, excel_local or Path(excel_por_defecto()))
 
 with cols[1].expander("Modo local (sin BAANOOL)"):
@@ -246,7 +262,7 @@ with cols[1].expander("Modo local (sin BAANOOL)"):
         accion_analizar_local(entrada_local, excel_local)
 
 if "evaluaciones" not in st.session_state:
-    st.info("Aún no hay resultados. Usa «Analizar periodo» (requiere el manifiesto del periodo) o el modo local.")
+    st.info("Aún no hay resultados. Usa «Analizar periodo» (requiere GPX descargados que cubran el periodo) o el modo local.")
     st.stop()
 
 evaluaciones = st.session_state["evaluaciones"]
@@ -258,9 +274,28 @@ en_modo_periodo = analizado.get("modo") == "PERIODO"
 if en_modo_periodo:
     st.markdown(f"**Los resultados mostrados corresponden al periodo:** {analizado['inicio']} → {analizado['fin']}")
     usado = st.session_state.get("manifiesto_usado") or {}
-    st.caption(f"Manifiesto `{usado.get('ruta')}` (ejecución {usado.get('fecha_ejecucion')}) · "
-               f"lote completo: {si_no(usado.get('lote_completo'))}"
-               + (f" · interrupción: {usado.get('motivo_interrupcion')}" if usado.get("motivo_interrupcion") else ""))
+    origen = st.session_state.get("origen_datos")
+    if origen:
+        st.markdown("**ANÁLISIS LOCAL** — origen de datos: GPX descargados previamente")
+        st.markdown(f"Periodo solicitado: **{analizado['inicio']} → {analizado['fin']}**")
+        for fila in origen["resumen"]:
+            etiqueta = ("Adquisición exacta" if fila["tipo"] == TIPO_EXACTA
+                        else "Periodo de adquisición utilizado (mayor que el solicitado)")
+            st.markdown(f"- {etiqueta}: **{texto_periodo(fila['adquisicion_inicio'], fila['adquisicion_fin'])}** · "
+                        f"{fila['vehiculos']} vehículo(s) · manifiesto `{fila['manifiesto']}`")
+        st.caption(NOTA_SIN_CONSULTA)
+        if origen["usa_mayor"]:
+            st.info("Parte de los datos proviene de una adquisición mayor: solo participan los puntos GPS dentro "
+                    "del periodo solicitado. La distancia observada puede ser menor que la real si faltan puntos "
+                    "cerca de los límites del intervalo o hay huecos de reporte.")
+        if origen["avisos"]:
+            with st.expander(f"Advertencias de selección de archivos ({len(origen['avisos'])})"):
+                for a in origen["avisos"]:
+                    st.markdown(f"- {a}")
+    else:
+        st.caption(f"Manifiesto `{usado.get('ruta')}` (ejecución {usado.get('fecha_ejecucion')}) · "
+                   f"lote completo: {si_no(usado.get('lote_completo'))}"
+                   + (f" · interrupción: {usado.get('motivo_interrupcion')}" if usado.get("motivo_interrupcion") else ""))
 else:
     st.markdown("**Resultados del modo local** (todas las carpetas de entrada/; sin periodo asignado).")
 aviso = advertencia_periodo(clave_sel, st.session_state) if clave_sel else None
@@ -304,6 +339,12 @@ if en_modo_periodo:
     d[3].metric("Sin dispositivo BAANOOL", resumen.sin_dispositivo)
     d[4].metric("Errores de adquisición", resumen.errores_adquisicion)
     d[5].metric("Sin GPX / con error", resumen.sin_gpx + resumen.con_error)
+    if resumen.sin_posiciones_subperiodo or resumen.cobertura_insuficiente:
+        d = st.columns(6)
+        d[0].metric("Sin posiciones en el subperiodo", resumen.sin_posiciones_subperiodo,
+                    help="El archivo local existe, pero no tiene puntos GPS dentro del intervalo seleccionado.")
+        d[1].metric("Cobertura local insuficiente", resumen.cobertura_insuficiente,
+                    help="Ninguna adquisición local con esta LLAVE cubre completamente el intervalo.")
 else:
     st.caption("Carpetas, no vehículos con incidencias: una carpeta sin GPX puede significar solo que "
                "falta cargar el archivo.")
@@ -367,6 +408,7 @@ else:
         "Conflictos": e.conflictos_timestamp,
         "Datos": e.estado_datos,
         "Adquisición": e.estado_adquisicion or "—",
+        "Fuente": fuente_corta(e),
         "Estado actual BAANOOL": e.estado_actual_baanool or "—",
         "Calidad GPS": {"SIN_ALERTAS": "SIN ALERTAS", "REVISAR": "REVISAR"}.get(e.calidad_gps, "—"),
         "Motivo": " | ".join(e.motivos),
@@ -400,6 +442,14 @@ else:
         st.warning(f"Inconsistencia entre el manifiesto y los archivos: {elegido.inconsistencia}")
     for motivo in elegido.motivos:
         st.markdown(f"- {motivo}")
+    fuente = (st.session_state.get("fuentes_datos") or {}).get(v.llave_original)
+    if fuente is not None and fuente.manifiesto:
+        st.caption(
+            f"Origen de datos: adquisición {'exacta' if fuente.exacta else 'mayor'} "
+            f"{texto_periodo(fuente.adquisicion_inicio, fuente.adquisicion_fin)} · manifiesto "
+            f"`{fuente.manifiesto}`" + (f" · archivo `{fuente.archivo_relativo}`" if fuente.archivo else ""))
+        for aviso in fuente.advertencias:
+            st.warning(aviso)
 
     if elegido.errores:
         st.subheader("Errores de archivo")
@@ -409,6 +459,10 @@ else:
         explicaciones = {
             DATOS_SIN_DATOS_PERIODO: "BAANOOL no entregó posiciones GPS para el periodo seleccionado.",
             DATOS_SIN_DISPOSITIVO: "Esta LLAVE local no tiene un dispositivo BAANOOL asociado actualmente.",
+            DATOS_SIN_POSICIONES_SUBPERIODO: "No se encontraron posiciones GPS dentro del intervalo seleccionado "
+                                             "en los archivos locales disponibles.",
+            DATOS_COBERTURA_LOCAL_INSUFICIENTE: "Ningún archivo local cubre completamente el intervalo para esta "
+                                                "LLAVE. Puedes actualizar desde BAANOOL con el otro botón.",
             DATOS_ERROR_ADQUISICION: "La adquisición de este vehículo no se completó; no hay datos que analizar.",
         }
         st.info(explicaciones.get(elegido.estado_datos, "Este vehículo no tiene datos utilizables.")
@@ -435,13 +489,23 @@ else:
             f"- Tiempo en paradas probables: {fmt_duracion(a.tiempo_en_paradas_probables)}")
 
         st.subheader("Movimiento por día")
-        st.dataframe(pd.DataFrame([{
-            "Fecha": f"{d:%Y-%m-%d}",
-            "Distancia observada (km)": round(km, 1),
-            "Nivel": elegido.nivel_por_dia[d],
-        } for d, km in elegido.distancia_por_dia.items()]), hide_index=True, width="stretch")
+        if en_modo_periodo:
+            filas_dia = filas_movimiento_diario(elegido, datetime.strptime(analizado["inicio"], "%Y-%m-%d %H:%M:%S"),
+                                                datetime.strptime(analizado["fin"], "%Y-%m-%d %H:%M:%S"))
+            st.dataframe(pd.DataFrame([{
+                "Fecha": f"{f['fecha']:%Y-%m-%d}", "Puntos GPS": f["puntos"],
+                "Distancia observada (km)": None if f["distancia_km"] is None else round(f["distancia_km"], 1),
+                "Nivel": f["nivel"] or "—", "Observación": f["observacion"],
+            } for f in filas_dia]), hide_index=True, width="stretch")
+        else:
+            st.dataframe(pd.DataFrame([{
+                "Fecha": f"{d:%Y-%m-%d}",
+                "Distancia observada (km)": round(km, 1),
+                "Nivel": elegido.nivel_por_dia[d],
+            } for d, km in elegido.distancia_por_dia.items()]), hide_index=True, width="stretch")
         st.caption("Día calendario en America/Mexico_City. Un tramo que cruza la medianoche se reparte "
-                   "proporcionalmente al tiempo en cada día. El nivel del periodo es el máximo diario.")
+                   "proporcionalmente al tiempo en cada día. El nivel del periodo es el máximo diario. "
+                   "Un día sin posiciones no es lo mismo que 0 km observados.")
 
         if g is None:
             st.warning("Geofencing no disponible para este análisis.")

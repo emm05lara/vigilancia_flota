@@ -1,11 +1,12 @@
 """Une LLAVE -> carpeta -> GPX -> métricas. No imprime nada."""
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from .calidad_gps import ResumenCalidadGps, analizar_calidad_gps
 from .geocercas import ResumenGeofencing, resumir_geofencing
-from .gpx_parser import Punto, leer_gpx
+from .gpx_parser import Punto, filtrar_ventana, leer_gpx
 from .llaves import llave_de_carpeta
 from .metricas import ConflictoTimestamp, ResumenPuntos, consolidar_puntos, resumir_puntos
 from .movimiento import ResumenActividad, resumir_actividad
@@ -24,6 +25,7 @@ class ResultadoGpx:
     duplicados_eliminados: int = 0
     conflictos_timestamp: list[ConflictoTimestamp] = field(default_factory=list)
     error: str | None = None
+    puntos_fuera_ventana: int = 0  # leídos del archivo pero fuera del periodo de análisis (solo con ventana)
 
 
 @dataclass
@@ -50,11 +52,22 @@ def listar_gpx(carpeta: Path) -> list[Path]:
     return sorted(p for p in carpeta.iterdir() if p.is_file() and p.suffix.lower() == ".gpx")
 
 
-def analizar_gpx(ruta: Path, zonas: Zonas | None = None) -> ResultadoGpx:
+def analizar_gpx(ruta: Path, zonas: Zonas | None = None,
+                 ventana: tuple[datetime, datetime] | None = None) -> ResultadoGpx:
+    """ventana=(inicio, fin): solo participan los puntos dentro (extremos incluidos); el filtrado es en
+    memoria, el archivo no se toca. Sin ventana se analiza el archivo completo, como siempre."""
     try:
         puntos, descartados = leer_gpx(ruta)
     except Exception as exc:  # un GPX dañado no debe detener el lote
         return ResultadoGpx(ruta, error=f"{type(exc).__name__}: {exc}")
+
+    fuera_ventana = 0
+    if ventana is not None:
+        dentro = filtrar_ventana(puntos, *ventana)
+        fuera_ventana = len(puntos) - len(dentro)
+        puntos = dentro
+        if not puntos:  # nada que calcular: ni métricas ni calidad inventadas
+            return ResultadoGpx(ruta, puntos_descartados=descartados, puntos_fuera_ventana=fuera_ventana)
 
     consolidacion = consolidar_puntos(puntos)
     return ResultadoGpx(
@@ -67,6 +80,7 @@ def analizar_gpx(ruta: Path, zonas: Zonas | None = None) -> ResultadoGpx:
         puntos_descartados=descartados,
         duplicados_eliminados=consolidacion.duplicados_eliminados,
         conflictos_timestamp=consolidacion.conflictos,
+        puntos_fuera_ventana=fuera_ventana,
     )
 
 
@@ -77,8 +91,11 @@ def analizar_carpeta(carpeta: Path, indice_llaves: dict[str, str],
 
 
 def analizar_archivos(carpeta: Path, archivos: list[Path], llave_original: str | None,
-                      zonas: Zonas | None = None) -> ResultadoVehiculo:
+                      zonas: Zonas | None = None,
+                      ventana: tuple[datetime, datetime] | None = None) -> ResultadoVehiculo:
     """Analiza únicamente los archivos indicados (en el orden dado) como un vehículo.
+
+    ventana: ver analizar_gpx. Si ningún punto cae dentro, el vehículo queda sin resumen (v.puntos vacío).
 
     Es el análisis de siempre; el modo por periodo BAANOOL lo usa con el archivo exacto del manifiesto
     para no mezclar periodos.
@@ -91,7 +108,7 @@ def analizar_archivos(carpeta: Path, archivos: list[Path], llave_original: str |
 
     todos: list[Punto] = []
     for ruta in archivos:
-        resultado_gpx = analizar_gpx(ruta)
+        resultado_gpx = analizar_gpx(ruta, ventana=ventana)
         resultado.gpx.append(resultado_gpx)
         todos.extend(resultado_gpx.puntos)
         # Lo detectado dentro de cada archivo y lo detectado entre archivos no se repite:
@@ -99,7 +116,7 @@ def analizar_archivos(carpeta: Path, archivos: list[Path], llave_original: str |
         resultado.duplicados_eliminados += resultado_gpx.duplicados_eliminados
         resultado.conflictos_timestamp.extend(resultado_gpx.conflictos_timestamp)
 
-    if resultado.gpx:
+    if resultado.gpx and (ventana is None or todos):
         consolidacion = consolidar_puntos(todos)
         resultado.puntos = consolidacion.puntos
         resultado.duplicados_eliminados += consolidacion.duplicados_eliminados

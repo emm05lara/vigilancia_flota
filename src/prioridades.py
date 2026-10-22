@@ -52,10 +52,14 @@ DATOS_ERROR = "ERROR"  # hay GPX pero ninguno aporta datos (todos fallaron o no 
 DATOS_SIN_DATOS_PERIODO = "SIN_DATOS_PERIODO"  # BAANOOL respondió, pero no entregó posiciones GPS
 DATOS_SIN_DISPOSITIVO = "SIN_DISPOSITIVO_BAANOOL"  # la LLAVE local no tiene dispositivo BAANOOL exacto
 DATOS_ERROR_ADQUISICION = "ERROR_ADQUISICION"  # la adquisición del periodo falló o no fue posible
-ESTADOS_DATOS = [DATOS_OK, DATOS_PARCIAL, DATOS_SIN_DATOS_PERIODO, DATOS_SIN_DISPOSITIVO,
-                 DATOS_ERROR_ADQUISICION, DATOS_SIN_GPX, DATOS_ERROR]
+# Estados derivados del análisis local de un subperiodo (no describen lo ocurrido en la adquisición):
+DATOS_SIN_POSICIONES_SUBPERIODO = "SIN_POSICIONES_SUBPERIODO"  # el GPX existe, sin puntos en el intervalo
+DATOS_COBERTURA_LOCAL_INSUFICIENTE = "COBERTURA_LOCAL_INSUFICIENTE"  # ninguna fuente local cubre el intervalo
+ESTADOS_DATOS = [DATOS_OK, DATOS_PARCIAL, DATOS_SIN_DATOS_PERIODO, DATOS_SIN_POSICIONES_SUBPERIODO,
+                 DATOS_SIN_DISPOSITIVO, DATOS_ERROR_ADQUISICION, DATOS_COBERTURA_LOCAL_INSUFICIENTE,
+                 DATOS_SIN_GPX, DATOS_ERROR]
 ESTADOS_SIN_DATOS = (DATOS_SIN_GPX, DATOS_ERROR, DATOS_SIN_DATOS_PERIODO, DATOS_SIN_DISPOSITIVO,
-                     DATOS_ERROR_ADQUISICION)
+                     DATOS_ERROR_ADQUISICION, DATOS_SIN_POSICIONES_SUBPERIODO, DATOS_COBERTURA_LOCAL_INSUFICIENTE)
 ESTADOS_PROBLEMA_DATOS = (DATOS_PARCIAL,) + ESTADOS_SIN_DATOS
 
 
@@ -123,6 +127,8 @@ class ResumenFlota:
     sin_datos_periodo: int = 0
     sin_dispositivo: int = 0
     errores_adquisicion: int = 0
+    sin_posiciones_subperiodo: int = 0
+    cobertura_insuficiente: int = 0
 
     @property
     def sin_novedad(self) -> int:
@@ -309,6 +315,8 @@ def resumir_flota(evaluaciones: list[EvaluacionVehiculo]) -> ResumenFlota:
         sin_datos_periodo=sum(1 for e in evaluaciones if e.estado_datos == DATOS_SIN_DATOS_PERIODO),
         sin_dispositivo=sum(1 for e in evaluaciones if e.estado_datos == DATOS_SIN_DISPOSITIVO),
         errores_adquisicion=sum(1 for e in evaluaciones if e.estado_datos == DATOS_ERROR_ADQUISICION),
+        sin_posiciones_subperiodo=sum(1 for e in evaluaciones if e.estado_datos == DATOS_SIN_POSICIONES_SUBPERIODO),
+        cobertura_insuficiente=sum(1 for e in evaluaciones if e.estado_datos == DATOS_COBERTURA_LOCAL_INSUFICIENTE),
     )
 
 
@@ -327,7 +335,7 @@ def filtrar_evaluaciones(evaluaciones: list[EvaluacionVehiculo], *,
     solo_atencion: incidencias operativas del vehículo (CRITICA/ALTA/REVISAR/MOVIMIENTO_ALTO);
         NO incluye carpetas sin datos.
     problemas_datos: PARCIAL y todos los estados sin datos (SIN_GPX, ERROR, SIN_DATOS_PERIODO,
-        SIN_DISPOSITIVO_BAANOOL, ERROR_ADQUISICION).
+        SIN_DISPOSITIVO_BAANOOL, ERROR_ADQUISICION, SIN_POSICIONES_SUBPERIODO, COBERTURA_LOCAL_INSUFICIENTE).
     estados_datos: solo los vehículos cuyo estado de datos está en la lista.
     texto: búsqueda (sin distinguir mayúsculas) dentro de la LLAVE.
     Si ambos están activos se muestra la unión; si ninguno, no se filtra por esto.

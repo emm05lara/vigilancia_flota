@@ -57,3 +57,15 @@ def leer_gpx(ruta: Path) -> tuple[list[Punto], int]:
         elem.clear()
     puntos.sort(key=lambda p: p.fecha)
     return puntos, descartados
+
+
+def filtrar_ventana(puntos: list[Punto], inicio: datetime, fin: datetime) -> list[Punto]:
+    """Puntos con inicio <= fecha <= fin (ambos extremos incluidos), sin modificarlos ni reordenarlos.
+
+    inicio/fin sin zona se interpretan como hora local de México; no se aplica ninguna otra conversión.
+    """
+    if inicio.tzinfo is None:
+        inicio = inicio.replace(tzinfo=ZONA_HORARIA)
+    if fin.tzinfo is None:
+        fin = fin.replace(tzinfo=ZONA_HORARIA)
+    return [p for p in puntos if inicio <= p.fecha <= fin]

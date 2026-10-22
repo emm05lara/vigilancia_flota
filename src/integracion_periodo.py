@@ -366,7 +366,8 @@ def actualizar_desde_baanool(inicio: datetime, fin: datetime, carpeta_entrada: P
 # ---------- estado de sesión (puro: sirve con st.session_state o con un dict) ----------
 
 CLAVES_ADQUISICION = ("adquisicion",)
-CLAVES_ANALISIS = ("evaluaciones", "resumen", "csv", "info", "periodo_analizado", "manifiesto_usado")
+CLAVES_ANALISIS = ("evaluaciones", "resumen", "csv", "info", "periodo_analizado", "manifiesto_usado",
+                   "origen_datos", "fuentes_datos")
 
 
 def aplicar_resultado_adquisicion(estado: MutableMapping, resultado: ResultadoAdquisicion) -> None:
@@ -393,6 +394,8 @@ def aplicar_resultado_analisis(estado: MutableMapping, resultado: ResultadoAnali
                                   "fecha_ejecucion": resultado.fecha_ejecucion_manifiesto,
                                   "lote_completo": resultado.lote_completo,
                                   "motivo_interrupcion": resultado.motivo_interrupcion}
+    estado["origen_datos"] = None  # solo el análisis local de subperiodo (seleccion_periodo) lo llena
+    estado["fuentes_datos"] = {}
     estado["mapas"] = {}
     estado["mapa_abierto"] = None
 
