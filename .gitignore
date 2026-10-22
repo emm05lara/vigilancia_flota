@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+
+# Resultados generados (mapas HTML, reportes)
+salida/
+
+# Temporales y de editor
+*.tmp
+*.log
+~$*
+.vscode/
+.idea/
+
+# Datos operativos locales (GPX exportados de BAANOOL)
+entrada/*/
+
+# NOTA: zonas/entidades_mexico.geojson NO se ignora a propósito. Es necesario para
+# el geofencing sin conexión y se regenera con 'py preparar_zonas.py'.
+
+# Descargas de prueba de BAANOOL (datos de vehículos reales)
+descargas_prueba/
+
+# Por si algún día se guarda un token/secreto en un archivo local (NO hacerlo: se lee de BAANOOL_TOKEN)
+.env
+*.token
+token.txt

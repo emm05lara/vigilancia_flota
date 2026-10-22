@@ -1,0 +1,7 @@
+# Herramienta personal y local: solo escucha en este equipo (no en la red).
+[server]
+address = "localhost"
+headless = true
+
+[browser]
+gatherUsageStats = false
